@@ -4,63 +4,110 @@ name: Prime Ludo APK Build
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prime-ludo-apk-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build Prime Ludo Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare Android project
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Locate or extract Android project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          if [ -f "settings.gradle.kts" ] || [ -f "settings.gradle" ]; then
-            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          if [[ -f "settings.gradle.kts" || -f "settings.gradle" ]]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
           else
-            ZIP_FILE=$(find . -maxdepth 2 -type f -iname 'PrimeLudo_Android_Project.zip' | head -n 1)
+            ZIP_FILE="$(find . -maxdepth 3 -type f -iname '*PrimeLudo*.zip' -print -quit)"
 
-            if [ -z "$ZIP_FILE" ]; then
-              echo "Android project ZIP not found!"
+            if [[ -z "$ZIP_FILE" ]]; then
+              echo "ERROR: Prime Ludo project ZIP not found!"
               exit 1
             fi
 
-            mkdir -p extracted
-            unzip -q "$ZIP_FILE" -d extracted
+            mkdir -p extracted-project
+            unzip -q "$ZIP_FILE" -d extracted-project
 
-            PROJECT_FILE=$(find extracted -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) | head -n 1)
+            SETTINGS_FILE="$(find extracted-project -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -print -quit)"
 
-            if [ -z "$PROJECT_FILE" ]; then
-              echo "Gradle project not found inside ZIP!"
+            if [[ -z "$SETTINGS_FILE" ]]; then
+              echo "ERROR: Gradle settings file missing inside ZIP!"
               exit 1
             fi
 
-            PROJECT_DIR=$(dirname "$PROJECT_FILE")
-            echo "PROJECT_DIR=$GITHUB_WORKSPACE/$PROJECT_DIR" >> "$GITHUB_ENV"
+            PROJECT_DIR="$(dirname "$GITHUB_WORKSPACE/$SETTINGS_FILE")"
           fi
 
-      - name: Set up Gradle
+          if [[ ! -f "$PROJECT_DIR/app/build.gradle.kts" && ! -f "$PROJECT_DIR/app/build.gradle" ]]; then
+            echo "ERROR: Android app module missing!"
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build Prime Ludo APK
-        run: gradle --no-daemon -p "$PROJECT_DIR" assembleDebug
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Upload APK
+      - name: Build Debug APK
+        run: |
+          gradle --no-daemon --stacktrace -p "$PROJECT_DIR" :app:assembleDebug
+
+      - name: Find APK
+        id: apk
+        run: |
+          set -euo pipefail
+          APK_FILE="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -type f -name '*.apk' -print -quit)"
+
+          if [[ -z "$APK_FILE" ]]; then
+            echo "APK not generated!"
+            exit 1
+          fi
+
+          mkdir -p "$GITHUB_WORKSPACE/apk-output"
+          cp "$APK_FILE" "$GITHUB_WORKSPACE/apk-output/Prime-Ludo-debug.apk"
+          echo "path=$GITHUB_WORKSPACE/apk-output/Prime-Ludo-debug.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Prime Ludo APK
         uses: actions/upload-artifact@v4
         with:
           name: Prime-Ludo-debug-APK
-          path: "**/app/build/outputs/apk/debug/app-debug.apk"
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
-          
+          retention-days: 14
+
+      - name: Build Summary
+        if: success()
+        run: |
+          echo "## Prime Ludo APK build successful" >> "$GITHUB_STEP_SUMMARY"
+          echo "Download Prime-Ludo-debug-APK from Artifacts." >> "$GITHUB_STEP_SUMMARY"
