@@ -13,8 +13,9 @@ permissions:
 
 jobs:
   build:
+    name: Build Prime Ludo
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     steps:
       - name: Checkout Repository
@@ -34,7 +35,8 @@ jobs:
           if [[ -f settings.gradle.kts || -f settings.gradle ]]; then
             PROJECT_DIR="$GITHUB_WORKSPACE"
           else
-            ZIP_FILE=$(find . -maxdepth 3 -type f -iname '*PrimeLudo*.zip' | head -n 1)
+            ZIP_FILE=$(find . -maxdepth 4 -type f \
+              -iname '*PrimeLudo*.zip' | head -n 1)
 
             if [[ -z "$ZIP_FILE" ]]; then
               echo "Prime Ludo ZIP not found!"
@@ -44,7 +46,9 @@ jobs:
             mkdir -p extracted
             unzip -q "$ZIP_FILE" -d extracted
 
-            SETTINGS=$(find extracted -type f \( -name settings.gradle.kts -o -name settings.gradle \) | head -n 1)
+            SETTINGS=$(find extracted -type f \
+              \( -name settings.gradle.kts \
+              -o -name settings.gradle \) | head -n 1)
 
             if [[ -z "$SETTINGS" ]]; then
               echo "Gradle settings file not found!"
@@ -55,11 +59,57 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Project found: $PROJECT_DIR"
+
+      - name: Locate Android SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
+          if [[ ! -d "$SDK_ROOT" ]]; then
+            echo "Android SDK directory not found: $SDK_ROOT"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+
+          echo "Android SDK: $SDK_ROOT"
+
+      - name: Locate SDK Manager
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+
+          SDKMANAGER=$(find "$SDK_ROOT" \
+            -type f -name sdkmanager 2>/dev/null \
+            | sort -V | tail -n 1)
+
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "sdkmanager not found in Android SDK!"
+            find "$SDK_ROOT" -maxdepth 5 -type f \
+              -name sdkmanager 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
+          echo "Found: $SDKMANAGER"
 
       - name: Install Android SDK Packages
+        shell: bash
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager --install \
+          set -euo pipefail
+
+          yes | "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" --licenses || true
+
+          "$SDKMANAGER" \
+            --sdk_root="$ANDROID_HOME" \
+            --install \
             "platform-tools" \
             "platforms;android-35" \
             "build-tools;35.0.0"
@@ -69,13 +119,34 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Prime Ludo APK
+      - name: Check Project Files
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "Checking Prime Ludo project..."
+
+          test -f "$PROJECT_DIR/settings.gradle" || \
+          test -f "$PROJECT_DIR/settings.gradle.kts"
+
+          test -f "$PROJECT_DIR/app/build.gradle" || \
+          test -f "$PROJECT_DIR/app/build.gradle.kts"
+
+          test -f "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+
+          echo "Project files verified."
+
+      - name: Build Prime Ludo APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
           gradle --no-daemon --stacktrace \
             -p "$PROJECT_DIR" \
             :app:assembleDebug
 
-      - name: Prepare APK
+      - name: Verify APK
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -83,14 +154,16 @@ jobs:
             -type f -name "*.apk" | head -n 1)
 
           if [[ -z "$APK" ]]; then
-            echo "APK not generated!"
+            echo "APK generation failed!"
             exit 1
           fi
 
           mkdir -p output
           cp "$APK" output/Prime-Ludo.apk
 
-      - name: Upload APK
+          echo "APK successfully prepared."
+
+      - name: Upload Prime Ludo APK
         uses: actions/upload-artifact@v4
         with:
           name: Prime-Ludo-APK
