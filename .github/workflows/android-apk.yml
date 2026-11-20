@@ -4,18 +4,20 @@ name: Prime Ludo APK Build
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
 
 permissions:
   contents: read
 
 concurrency:
-  group: prime-ludo-${{ github.ref }}
+  group: prime-ludo-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
-    name: Build Prime Ludo APK
+    name: Build Prime Ludo
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -29,25 +31,25 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Locate or Extract Prime Ludo Project
+      - name: Find or Extract Project
         shell: bash
         run: |
           set -euo pipefail
 
           PROJECT_DIR=""
 
-          SETTINGS=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
-            \( -name settings.gradle.kts -o -name settings.gradle \) \
-            -not -path '*/.gradle/*' | head -n 1 || true)
+          SETTINGS=$(find "$GITHUB_WORKSPACE" -maxdepth 5 -type f \
+            \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
+            -not -path "*/.gradle/*" | head -n 1 || true)
 
           if [[ -n "$SETTINGS" ]]; then
             PROJECT_DIR="$(dirname "$SETTINGS")"
           else
-            ZIP_FILE=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -type f \
-              -iname '*PrimeLudo*.zip' | head -n 1 || true)
+            ZIP_FILE=$(find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
+              -iname "*PrimeLudo*.zip" | head -n 1 || true)
 
             if [[ -z "$ZIP_FILE" ]]; then
-              echo "ERROR: Prime Ludo ZIP or Gradle project not found."
+              echo "ERROR: Prime Ludo project ZIP not found."
               exit 1
             fi
 
@@ -55,11 +57,11 @@ jobs:
             unzip -oq "$ZIP_FILE" -d "$GITHUB_WORKSPACE/extracted"
 
             SETTINGS=$(find "$GITHUB_WORKSPACE/extracted" -type f \
-              \( -name settings.gradle.kts -o -name settings.gradle \) \
+              \( -name "settings.gradle.kts" -o -name "settings.gradle" \) \
               | head -n 1 || true)
 
             if [[ -z "$SETTINGS" ]]; then
-              echo "ERROR: ZIP does not contain Gradle settings file."
+              echo "ERROR: Gradle settings file missing."
               exit 1
             fi
 
@@ -73,25 +75,31 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Project located: $PROJECT_DIR"
+          echo "Project directory: $PROJECT_DIR"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK Packages
+      - name: Configure Android SDK
         shell: bash
         run: |
           set -euo pipefail
 
           SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
 
-          SDKMANAGER=$(find "$SDK_ROOT" -type f \
-            -name sdkmanager 2>/dev/null | sort -V | tail -n 1)
-
-          if [[ -z "$SDKMANAGER" ]]; then
-            echo "ERROR: sdkmanager not found."
+          if [[ ! -d "$SDK_ROOT" ]]; then
+            echo "ERROR: Android SDK directory not found."
             exit 1
           fi
+
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" \
+            -type f -name sdkmanager 2>/dev/null \
+            | sort -V | tail -n 1 || true)
+
+          if [[ -z "$SDKMANAGER" ]]; then
+            echo "ERROR: sdkmanager not found in $SDK_ROOT"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
           yes | "$SDKMANAGER" \
             --sdk_root="$SDK_ROOT" --licenses || true
@@ -106,18 +114,19 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Prime Ludo
+      - name: Build Debug APK
         shell: bash
         run: |
           set -euo pipefail
 
           cd "$PROJECT_DIR"
+
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
           gradle --no-daemon --stacktrace \
             clean :app:assembleDebug
 
-      - name: Verify and Prepare APK
+      - name: Check APK
         shell: bash
         run: |
           set -euo pipefail
@@ -126,19 +135,20 @@ jobs:
             -type f -name "*.apk" | head -n 1 || true)
 
           if [[ -z "$APK" ]]; then
-            echo "ERROR: APK was not generated."
+            echo "ERROR: APK not generated."
             exit 1
           fi
 
           mkdir -p "$GITHUB_WORKSPACE/output"
-          cp "$APK" "$GITHUB_WORKSPACE/output/Prime-Ludo-0.2.0.apk"
 
-          echo "APK prepared successfully."
+          cp "$APK" "$GITHUB_WORKSPACE/output/Prime-Ludo.apk"
 
-      - name: Upload Prime Ludo APK
+          echo "APK generated successfully."
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Prime-Ludo-0.2.0-APK
-          path: output/Prime-Ludo-0.2.0.apk
+          name: Prime-Ludo-APK
+          path: output/Prime-Ludo.apk
           if-no-files-found: error
           retention-days: 14
